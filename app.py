@@ -7,8 +7,8 @@ st.set_page_config(page_title="Verificador de Diário", layout="wide", page_icon
 
 st.title("📚 Verificador de Aulas Lançadas no Diário")
 st.markdown("""
-Compara os **dias letivos previstos** (planilha de distribuição) com os dias 
-**efetivamente registrados** no PDF do diário de classe, identificando aulas não lançadas.
+Compara os **dias letivos previstos** (planilha) com os dias 
+**efetivamente registrados** no PDF do diário, apontando aulas não lançadas.
 """)
 
 # =========================================================
@@ -26,11 +26,7 @@ with col2:
 st.divider()
 st.subheader("🎯 Etapa a Verificar")
 
-etapa_opcoes = {
-    "1ª Etapa": 1,
-    "2ª Etapa": 2,
-    "3ª Etapa": 3,
-}
+etapa_opcoes = {"1ª Etapa": 1, "2ª Etapa": 2, "3ª Etapa": 3}
 etapa_label = st.radio(
     "Deseja verificar os dados de qual etapa?",
     options=list(etapa_opcoes.keys()),
@@ -39,31 +35,50 @@ etapa_label = st.radio(
 etapa_selecionada = etapa_opcoes[etapa_label]
 
 # =========================================================
-# 3) Distribuição manual (varia por disciplina/ano)
+# 3) Distribuição manual
 # =========================================================
 st.divider()
 st.subheader("⚙️ Distribuição de Aulas (manual)")
-st.caption(
-    f"Informe quantas aulas da disciplina ocorrem em cada dia da semana "
-    f"**na {etapa_label}**."
-)
+st.caption(f"Informe quantas aulas da disciplina ocorrem em cada dia da semana **na {etapa_label}**.")
 
 dias_semana = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira"]
-
 default_dist = pd.DataFrame({
     "Dia da Semana": dias_semana,
     "Nº de Aulas": [2, 1, 1, 1, 1],
 })
-
-dist_df = st.data_editor(
-    default_dist,
-    num_rows="fixed",
-    use_container_width=True,
-    key="dist_editor",
-)
+dist_df = st.data_editor(default_dist, num_rows="fixed",
+                         use_container_width=True, key="dist_editor")
 
 # =========================================================
-# 4) Verificação
+# 4) Extração robusta de datas
+# =========================================================
+def extract_dates_from_pdf(pdf_file):
+    """
+    Extrai datas DD/MM do PDF usando múltiplos padrões.
+    Retorna (set_de_datas, texto_bruto_concatenado).
+    """
+    dates = set()
+    pages_text = []
+
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            pages_text.append(text)
+
+            # Normaliza espaços especiais que o pdfplumber insere
+            normalized = re.sub(r'[\u00A0\u2007\u202F\u2009]', ' ', text)
+
+            # --- Padrão 1: DD/MM em qualquer lugar (sem ^) ---
+            for m in re.finditer(r'(?<!\d)(\d{1,2})\s*/\s*(\d{1,2})(?!\d)', normalized):
+                d, mo = int(m.group(1)), int(m.group(2))
+                if 1 <= d <= 31 and 1 <= mo <= 12:
+                    dates.add(f"{d:02d}/{mo:02d}")
+
+    return dates, "\n\n===== PAGE BREAK =====\n\n".join(pages_text)
+
+
+# =========================================================
+# 5) Verificação
 # =========================================================
 st.divider()
 
@@ -83,24 +98,26 @@ with st.spinner(f"Processando {etapa_label}..."):
         dias_df["Data"] = pd.to_datetime(dias_df["Data"], errors="coerce")
         dias_df = dias_df.dropna(subset=["Data"])
 
-        # Filtra apenas a etapa selecionada
         dias_etapa = dias_df[dias_df["Etapa"] == etapa_selecionada].copy()
-
         if dias_etapa.empty:
             st.error(f"Nenhum dia letivo encontrado para a {etapa_label} na planilha.")
             st.stop()
 
-        # ---------- Extrai datas do PDF ----------
-        registered_dates = set()
-        with pdfplumber.open(pdf_file) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text() or ""
-                # Casa "DD/MM" no início de linha (formato da síntese)
-                for m in re.finditer(r'^\s*(\d{1,2})/(\d{1,2})\b', text, re.MULTILINE):
-                    d, mo = int(m.group(1)), int(m.group(2))
-                    registered_dates.add(f"{d:02d}/{mo:02d}")
+        # ---------- Datas do PDF ----------
+        registered_dates, raw_text = extract_dates_from_pdf(pdf_file)
 
-        # ---------- Monta tabela de verificação ----------
+        # ---------- Diagnóstico ----------
+        with st.expander("🐞 Diagnóstico (abra se algo parecer errado)"):
+            st.write(f"**Datas detectadas no PDF:** {len(registered_dates)}")
+            if registered_dates:
+                st.write(sorted(registered_dates))
+            else:
+                st.error("⚠️ Nenhuma data DD/MM foi encontrada no PDF. "
+                         "Copie um trecho do texto bruto abaixo e me mostre.")
+            st.text_area("📄 Texto bruto extraído (primeiros 5000 caracteres)",
+                         raw_text[:5000], height=300)
+
+        # ---------- Verificação ----------
         rows = []
         for _, row in dias_etapa.iterrows():
             data = row["Data"]
@@ -120,7 +137,7 @@ with st.spinner(f"Processando {etapa_label}..."):
             })
 
         if not rows:
-            st.warning("Nenhuma aula prevista encontrada. Verifique a distribuição informada.")
+            st.warning("Nenhuma aula prevista encontrada.")
             st.stop()
 
         result_df = pd.DataFrame(rows)
@@ -132,10 +149,10 @@ with st.spinner(f"Processando {etapa_label}..."):
         falt_total = prev_total - lanc_total
 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Dias letivos na etapa", len(result_df))
+        c1.metric("Dias letivos", len(result_df))
         c2.metric("Aulas previstas", prev_total)
         c3.metric("Aulas lançadas", lanc_total)
-        c4.metric("Aulas faltantes", falt_total, delta=None if falt_total == 0 else f"-{falt_total}", delta_color="inverse")
+        c4.metric("Aulas faltantes", falt_total)
 
         # ---------- Aulas faltantes ----------
         st.subheader("❌ Aulas Não Lançadas no Diário")
@@ -151,19 +168,14 @@ with st.spinner(f"Processando {etapa_label}..."):
             )
             csv = missing.to_csv(index=False).encode("utf-8-sig")
             st.download_button(
-                f"📥 Baixar lista ({etapa_label})",
+                f"📥 Baixar CSV ({etapa_label})",
                 csv,
                 f"aulas_faltantes_{etapa_selecionada}etapa.csv",
                 "text/csv",
             )
 
-        # ---------- Detalhes ----------
-        with st.expander(f"🔎 Ver todos os dias da {etapa_label} e status"):
+        with st.expander(f"🔎 Todos os dias da {etapa_label} e status"):
             st.dataframe(result_df, use_container_width=True, hide_index=True)
-
-        with st.expander("🗓️ Datas detectadas no PDF"):
-            st.write(f"Total: **{len(registered_dates)}** datas")
-            st.write(sorted(registered_dates))
 
     except Exception as e:
         st.error(f"Erro ao processar: {e}")
