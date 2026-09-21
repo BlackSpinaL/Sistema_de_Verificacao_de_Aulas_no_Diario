@@ -46,16 +46,8 @@ dist_df = st.data_editor(default_dist, num_rows="fixed",
 # 4) Extração do PDF — apenas páginas 2+ (Síntese)
 # =========================================================
 def extract_lessons_from_text(text):
-    """
-    Extrai pares (DD/MM, qtd_aulas) do texto da Síntese.
-    Suporta formatos:
-      "18/05 1 ..." → 18/05 com 1 aula
-      "05/02 0 ..." → 05/02 com 0 aulas
-    """
     normalized = re.sub(r'[\u00A0\u2007\u202F\u2009]', ' ', text)
-
     lessons = []
-    # Agora aceita espaço entre a data e o número de aulas
     pattern = r'(\d{1,2})/(\d{1,2})\s+(\d{1,2})'
     for m in re.finditer(pattern, normalized):
         d, mo, count = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -63,12 +55,7 @@ def extract_lessons_from_text(text):
             lessons.append((f"{d:02d}/{mo:02d}", count))
     return lessons
 
-
 def extract_lessons_from_words(pdf):
-    """
-    Fallback: usa coordenadas de palavras (para PDFs onde extract_text falha).
-    Procura DD/MM seguido de número pequeno (aulas).
-    """
     lessons = []
     for i, page in enumerate(pdf.pages):
         if i == 0:
@@ -77,12 +64,10 @@ def extract_lessons_from_words(pdf):
             words = page.extract_words()
         except Exception:
             continue
-
         rows = {}
         for w in words:
             key = round(w['top'] / 5)
             rows.setdefault(key, []).append(w)
-
         for key in sorted(rows.keys()):
             line = sorted(rows[key], key=lambda w: w['x0'])
             for j, w in enumerate(line):
@@ -124,17 +109,14 @@ with st.spinner(f"Processando {etapa_label}..."):
 
         # ---------- Extração do PDF ----------
         text_lessons, word_lessons, raw_pages = [], [], []
-
         with pdfplumber.open(pdf_file) as pdf:
             total_pages = len(pdf.pages)
-
             for i, page in enumerate(pdf.pages):
                 if i == 0:
                     continue
                 txt = page.extract_text() or ""
                 raw_pages.append(f"--- Página {i+1} ---\n{txt}")
                 text_lessons.extend(extract_lessons_from_text(txt))
-
             word_lessons = extract_lessons_from_words(pdf)
 
         lessons = text_lessons if len(text_lessons) >= len(word_lessons) else word_lessons
@@ -160,12 +142,10 @@ with st.spinner(f"Processando {etapa_label}..."):
             data = row["Data"]
             weekday = str(row["Dia da Semana"]).strip()
             ddmm = data.strftime("%d/%m")
-
             match = dist_df[dist_df["Dia da Semana"] == weekday]
             expected = int(match["Nº de Aulas"].iloc[0]) if len(match) > 0 else 0
             launched = pdf_by_date.get(ddmm, 0)
             missing = max(0, expected - launched)
-
             if expected > 0:
                 rows.append({
                     "Data": data.strftime("%d/%m/%Y"),
@@ -192,7 +172,6 @@ with st.spinner(f"Processando {etapa_label}..."):
         # ---------- Faltantes ----------
         st.subheader("❌ Dias com aulas não lançadas")
         missing_df = result_df[result_df["Faltantes"] > 0].copy()
-
         if missing_df.empty:
             st.success(f"🎉 Todas as aulas da {etapa_label} foram lançadas!")
         else:
@@ -205,4 +184,9 @@ with st.spinner(f"Processando {etapa_label}..."):
 
         # ---------- Todos os dias ----------
         with st.expander(f"🔎 Todos os dias da {etapa_label} e status"):
-            st.data
+            st.dataframe(result_df, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error(f"Erro ao processar: {e}")
+        with st.expander("Detalhes do erro"):
+            st.exception(e)
