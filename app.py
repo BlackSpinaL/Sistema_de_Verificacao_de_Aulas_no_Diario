@@ -49,19 +49,16 @@ def extract_lessons_from_text(text):
     """
     Extrai pares (DD/MM, qtd_aulas) do texto da Síntese.
     Suporta formatos:
-      "18/051A"         → 18/05 com 1 aula
-      "18/05 2 Corr..." → 18/05 com 2 aulas
-      "05/020D"         → 05/02 com 0 aulas
+      "18/05 1 ..." → 18/05 com 1 aula
+      "05/02 0 ..." → 05/02 com 0 aulas
     """
-    # Normaliza espaços especiais que o pdfplumber insere
     normalized = re.sub(r'[\u00A0\u2007\u202F\u2009]', ' ', text)
 
     lessons = []
-    # DD / MM seguido de 1-2 dígitos (aulas) + letra (início da descrição)
-    pattern = r'(\d{1,2})/(\d{1,2})(\d{1,2})\s*(?=[A-Za-zÀ-ú])'
+    # Agora aceita espaço entre a data e o número de aulas
+    pattern = r'(\d{1,2})/(\d{1,2})\s+(\d{1,2})'
     for m in re.finditer(pattern, normalized):
         d, mo, count = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        # Valida: dia 1-31, mês 1-12, até 10 aulas/dia (filtra falsos positivos)
         if 1 <= d <= 31 and 1 <= mo <= 12 and 0 <= count <= 10:
             lessons.append((f"{d:02d}/{mo:02d}", count))
     return lessons
@@ -69,8 +66,8 @@ def extract_lessons_from_text(text):
 
 def extract_lessons_from_words(pdf):
     """
-    Fallback: usa coordenadas de palavras (para PDFs onde extract_text falha,
-    como o 12703). Agrupa por linha e procura DD/MM seguido de nº pequeno.
+    Fallback: usa coordenadas de palavras (para PDFs onde extract_text falha).
+    Procura DD/MM seguido de número pequeno (aulas).
     """
     lessons = []
     for i, page in enumerate(pdf.pages):
@@ -81,7 +78,6 @@ def extract_lessons_from_words(pdf):
         except Exception:
             continue
 
-        # Agrupa palavras por linha (coordenada 'top' aproximada)
         rows = {}
         for w in words:
             key = round(w['top'] / 5)
@@ -91,7 +87,6 @@ def extract_lessons_from_words(pdf):
             line = sorted(rows[key], key=lambda w: w['x0'])
             for j, w in enumerate(line):
                 if re.match(r'^\d{1,2}/\d{1,2}$', w['text']):
-                    # Procura próximo token numérico pequeno (aulas)
                     for k in range(j + 1, min(j + 3, len(line))):
                         if re.match(r'^\d{1,2}$', line[k]['text']):
                             n = int(line[k]['text'])
@@ -100,7 +95,6 @@ def extract_lessons_from_words(pdf):
                                 lessons.append((f"{int(d):02d}/{int(mo):02d}", n))
                                 break
     return lessons
-
 
 # =========================================================
 # 5) Verificação
@@ -128,28 +122,24 @@ with st.spinner(f"Processando {etapa_label}..."):
             st.error(f"Nenhum dia letivo encontrado para a {etapa_label}.")
             st.stop()
 
-        # ---------- Extração do PDF (páginas 2+) ----------
+        # ---------- Extração do PDF ----------
         text_lessons, word_lessons, raw_pages = [], [], []
 
         with pdfplumber.open(pdf_file) as pdf:
             total_pages = len(pdf.pages)
 
-            # Método 1: extract_text (páginas 2+)
             for i, page in enumerate(pdf.pages):
-                if i == 0:  # ignora página 1 (cabeçalho)
+                if i == 0:
                     continue
                 txt = page.extract_text() or ""
                 raw_pages.append(f"--- Página {i+1} ---\n{txt}")
                 text_lessons.extend(extract_lessons_from_text(txt))
 
-            # Método 2: extract_words (fallback)
             word_lessons = extract_lessons_from_words(pdf)
 
-        # Escolhe o método que achou MAIS aulas
         lessons = text_lessons if len(text_lessons) >= len(word_lessons) else word_lessons
         method_used = "texto" if lessons is text_lessons else "coordenadas (palavras)"
 
-        # Soma duplicatas: 05/02 (0) + 05/02 (2) = 2 aulas em 05/02
         pdf_by_date = {}
         for date_str, count in lessons:
             pdf_by_date[date_str] = pdf_by_date.get(date_str, 0) + count
@@ -160,7 +150,6 @@ with st.spinner(f"Processando {etapa_label}..."):
             st.write(f"**Aulas detectadas via texto:** {len(text_lessons)}")
             st.write(f"**Aulas detectadas via palavras:** {len(word_lessons)}")
             st.write(f"**Método usado:** {method_used}")
-            st.write(f"**Datas detectadas (DD/MM → total de aulas no dia):**")
             st.json(pdf_by_date)
             st.text_area("Texto bruto extraído (páginas 2+)",
                          "\n\n".join(raw_pages)[:8000], height=250)
@@ -216,9 +205,4 @@ with st.spinner(f"Processando {etapa_label}..."):
 
         # ---------- Todos os dias ----------
         with st.expander(f"🔎 Todos os dias da {etapa_label} e status"):
-            st.dataframe(result_df, use_container_width=True, hide_index=True)
-
-    except Exception as e:
-        st.error(f"Erro ao processar: {e}")
-        with st.expander("Detalhes do erro"):
-            st.exception(e)
+            st.data
